@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>TableBench Data Viewer</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">DATAMIND · TABLEBENCH</p>
+        <h1>Evaluation Data Viewer</h1>
+      </div>
+      <div class="record-rail" aria-label="Current result position">
+        <span id="rail-position">—</span>
+        <span class="rail-divider">/</span>
+        <span id="rail-total">—</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="control-panel" aria-label="Dataset filters">
+        <label class="field field-search" for="search-input">
+          <span>Search ID or question</span>
+          <input id="search-input" type="search" placeholder="Type an ID or keyword…" autocomplete="off">
+        </label>
+
+        <label class="field" for="qtype-filter">
+          <span>QType</span>
+          <select id="qtype-filter">
+            <option value="">All QTypes</option>
+          </select>
+        </label>
+
+        <label class="field" for="qsubtype-filter">
+          <span>QSubtype</span>
+          <select id="qsubtype-filter">
+            <option value="">All QSubtypes</option>
+          </select>
+        </label>
+
+        <div class="navigation" aria-label="Result navigation">
+          <button id="previous-button" type="button">← Previous</button>
+          <label class="position-field" for="position-input">
+            <span class="sr-only">Result position</span>
+            <input id="position-input" type="number" min="1" value="1" inputmode="numeric">
+          </label>
+          <button id="next-button" type="button">Next →</button>
+        </div>
+      </section>
+
+      <div class="status-row">
+        <p id="result-summary">Loading records…</p>
+        <p id="status-message" role="status" aria-live="polite"></p>
+      </div>
+
+      <section id="empty-state" class="message-panel" hidden>
+        <h2>No matching records</h2>
+        <p>Clear a filter or try a broader search.</p>
+      </section>
+
+      <article id="record-detail" class="record-card" aria-live="polite" hidden>
+        <div class="metadata-grid">
+          <div>
+            <span class="metadata-label">ID</span>
+            <code id="record-id">—</code>
+          </div>
+          <div>
+            <span class="metadata-label">QType</span>
+            <span id="record-qtype">—</span>
+          </div>
+          <div>
+            <span class="metadata-label">QSubtype</span>
+            <span id="record-qsubtype">—</span>
+          </div>
+          <div>
+            <span class="metadata-label">CSV file</span>
+            <code id="record-csv">—</code>
+          </div>
+        </div>
+
+        <div class="question-block">
+          <p class="section-label">Question</p>
+          <h2 id="record-question">—</h2>
+        </div>
+
+        <div class="answer-block">
+          <span class="section-label">Gold answer</span>
+          <strong id="record-answer">—</strong>
+        </div>
+      </article>
+
+      <section class="table-panel" aria-labelledby="table-title">
+        <div class="table-heading">
+          <div>
+            <p class="section-label">Source data</p>
+            <h2 id="table-title">CSV table</h2>
+          </div>
+          <span id="table-size" class="table-size"></span>
+        </div>
+        <div id="table-container" class="table-container">
+          <p class="table-placeholder">Select a record to load its table.</p>
+        </div>
+      </section>
+    </main>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>
