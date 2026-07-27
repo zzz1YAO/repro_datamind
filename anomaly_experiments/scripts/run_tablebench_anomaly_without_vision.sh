@@ -58,7 +58,7 @@ if (( ${#QSUBTYPES[@]} > 0 )); then
   CATALOG_NAME="${CATALOG_NAME}_${QSUBTYPE_NAME}"
 fi
 CATALOG_SLUG="${CATALOG_NAME//\//_}"
-OUTPUT_DIR="${OUTPUT_DIR:-${EXPERIMENT_ROOT}/outputs/${MODEL_SLUG}_anomaly_vision}"
+OUTPUT_DIR="${OUTPUT_DIR:-${EXPERIMENT_ROOT}/outputs/${MODEL_SLUG}_anomaly}"
 
 if [[ ! -f "${INPUT_FILE}" ]]; then
   echo "Prepared eval input not found: ${INPUT_FILE}" >&2
@@ -93,7 +93,6 @@ EVAL_ARGS=(
   --input_file "${INPUT_FILE}"
   --csv_folder "${CSV_FOLDER}"
   --output_dir "${OUTPUT_DIR}"
-  --vision_file "${VISION_FILE}"
   # --require_vision
   --temperature "${TEMPERATURE}"
   --top_p "${TOP_P}"

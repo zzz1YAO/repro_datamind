@@ -68,6 +68,16 @@ INVALID_ACTION_OBSERVATION = (
 )
 
 
+FINAL_TURN_OBSERVATION = (
+    "This is your final turn. Do not call any more tools or provide any more "
+    "Python code. Using only the evidence already gathered, provide your best "
+    "final response now. Your response must contain exactly one final answer "
+    "inside <answer> and </answer> tags. If the available evidence is "
+    "insufficient, return <answer>No conclusion can be reached from the "
+    "available evidence.</answer>."
+)
+
+
 ACTION_RE = re.compile(r"<(code|answer)>(.*?)</\1>", re.IGNORECASE | re.DOTALL)
 
 
@@ -321,6 +331,11 @@ class TableBenchReActRunner:
         execution_error_count = 0
 
         for _step in range(self.config.max_turns):
+            if _step == self.config.max_turns - 1:
+                final_turn_message = {"role": "user", "content": FINAL_TURN_OBSERVATION}
+                messages.append(final_turn_message)
+                trajectory.append(final_turn_message)
+
             raw_response = self.generator.respond(
                 messages,
                 temperature=self.config.temperature,

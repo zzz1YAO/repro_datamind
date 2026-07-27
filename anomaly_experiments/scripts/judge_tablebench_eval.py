@@ -3,6 +3,7 @@
 
 import argparse
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 from pathlib import Path
@@ -14,10 +15,12 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 MISSING_ANSWER_REASON = "No valid final answer was captured."
 RESPONSE_PATTERN = re.compile(
     r"\A\s*<thought>(?P<thought>.*?)</thought>\s*"
-    r"<score>\s*(?P<score>[01])\s*</score>\s*\Z",
+    r"<score>\s*(?P<score>0(?:\.5|\.8)?|1)\s*</score>\s*\Z",
     flags=re.IGNORECASE | re.DOTALL,
 )
 
+
+VALID_SCORES = (0, 0.5, 0.8, 1)
 
 SYSTEM_PROMPT = """You are a fair and professional evaluator. Decide whether a
 predicted answer is correct given the question and authoritative ground-truth
@@ -39,25 +42,33 @@ Judgment rules:
 7. Harmless explanation that does not change the conclusion is allowed.
 8. metric_name is context about the traditional metric only. Judge
    independently and do not infer or reproduce any traditional metric score.
+9. For anomaly detection questions (qtype="Anomaly Detection"), partial credit
+   is allowed:
+   a. Score 0.5 when: (i) the prediction partially includes the correct answer
+      without containing clearly wrong answers, OR (ii) the answer is
+      essentially correct but expressed from a different perspective.
+   b. Score 0.8 when the prediction fully includes the correct answer but also
+      lists additional anomalies, provided the reasoning for those extra
+      anomalies is logically sound.
 
 Return exactly one non-empty <thought> with 1-3 concise sentences followed by
-exactly one binary <score> tag, with no other text:
+exactly one <score> tag containing 0, 0.5, 0.8, or 1, with no other text:
 <thought>Concise evaluation.</thought>
 <score>0</score>"""
 
 
-def parse_judge_response(response: str) -> Tuple[str, int]:
+def parse_judge_response(response: str) -> Tuple[str, float]:
     """Parse the judge's strict tagged response."""
     response = str(response)
     if len(re.findall(r"<thought>", response, flags=re.IGNORECASE)) != 1:
         raise ValueError("Judge response must contain exactly one thought tag")
     match = RESPONSE_PATTERN.fullmatch(response)
     if not match:
-        raise ValueError("Judge response must contain exactly one thought and one 0/1 score")
+        raise ValueError("Judge response must contain exactly one thought and one valid score (0, 0.5, 0.8, 1)")
     thought = match.group("thought").strip()
     if not thought:
         raise ValueError("Judge thought must not be empty")
-    return thought, int(match.group("score"))
+    return thought, float(match.group("score"))
 
 
 def build_judge_messages(record: Dict[str, Any]) -> List[Dict[str, str]]:
@@ -106,7 +117,7 @@ class OpenAIChatJudge:
             client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
         self.client = client
 
-    def evaluate(self, record: Dict[str, Any]) -> Tuple[str, int]:
+    def evaluate(self, record: Dict[str, Any]) -> Tuple[str, float]:
         last_error: Optional[Exception] = None
         for _attempt in range(1, self.max_retries + 1):
             try:
@@ -203,17 +214,30 @@ def _brief_error(exc: Exception, max_length: int = 240) -> str:
     return f"Judge failed: {message}"
 
 
+def _evaluate_row(
+    index: int,
+    row: Dict[str, Any],
+    judge: Any,
+) -> Tuple[int, Optional[float], str]:
+    """Evaluate one row without mutating shared state."""
+    try:
+        reason, score = judge.evaluate(row)
+        return index, score, reason
+    except Exception as exc:
+        return index, None, _brief_error(exc)
+
+
 def summarize_rows(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     rows = list(rows)
-    scored = [row for row in rows if row.get("llm_judge_score") in (0, 1)]
-    subtype_scores: Dict[str, List[int]] = defaultdict(list)
+    scored = [row for row in rows if row.get("llm_judge_score") in VALID_SCORES]
+    subtype_scores: Dict[str, List[float]] = defaultdict(list)
     subtype_totals: Dict[str, int] = defaultdict(int)
     for row in rows:
         subtype = str(row.get("qsubtype", ""))
         subtype_totals[subtype] += 1
         score = row.get("llm_judge_score")
-        if score in (0, 1):
-            subtype_scores[subtype].append(int(score))
+        if score in VALID_SCORES:
+            subtype_scores[subtype].append(float(score))
     subtypes = {}
     for subtype in sorted(subtype_totals):
         scores = subtype_scores[subtype]
@@ -226,7 +250,7 @@ def summarize_rows(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         "scored": len(scored),
         "total": len(rows),
         "mean": (
-            sum(int(row["llm_judge_score"]) for row in scored) / len(scored)
+            sum(float(row["llm_judge_score"]) for row in scored) / len(scored)
             if scored
             else None
         ),
@@ -271,46 +295,86 @@ def process_results_file(
     overwrite: bool = False,
     limit: Optional[int] = None,
     show_progress: bool = True,
+    workers: int = 1,
 ) -> Dict[str, Any]:
     """Judge eligible rows and atomically persist after each processed row."""
     path = Path(results_file)
     if limit is not None and limit < 0:
         raise ValueError("limit must be non-negative")
+    if workers < 1:
+        raise ValueError("workers must be at least 1")
     rows = read_jsonl(path)
     original_mode = stat.S_IMODE(path.stat().st_mode)
     candidate_indices = [
         index
         for index, row in enumerate(rows)
-        if overwrite or row.get("llm_judge_score") not in (0, 1)
+        if overwrite or row.get("llm_judge_score") not in VALID_SCORES
     ]
     if limit is not None:
         candidate_indices = candidate_indices[:limit]
 
-    iterator: Iterable[int] = candidate_indices
-    if show_progress:
-        from tqdm import tqdm
-
-        iterator = tqdm(candidate_indices, desc="LLM Judge", unit="item")
-
     processed = 0
-    for index in iterator:
-        row = rows[index]
-        if not has_valid_prediction(row):
-            row["llm_judge_score"] = 0
-            row["llm_judge_reason"] = MISSING_ANSWER_REASON
-            row["llm_judge_model"] = None
-        else:
-            try:
-                reason, score = judge.evaluate(row)
+    if workers == 1:
+        iterator: Iterable[int] = candidate_indices
+        if show_progress:
+            from tqdm import tqdm
+
+            iterator = tqdm(candidate_indices, desc="LLM Judge", unit="item")
+
+        for index in iterator:
+            row = rows[index]
+            if not has_valid_prediction(row):
+                row["llm_judge_score"] = 0
+                row["llm_judge_reason"] = MISSING_ANSWER_REASON
+                row["llm_judge_model"] = None
+            else:
+                index, score, reason = _evaluate_row(index, row, judge)
                 row["llm_judge_score"] = score
                 row["llm_judge_reason"] = reason
                 row["llm_judge_model"] = judge.model_name
-            except Exception as exc:
-                row["llm_judge_score"] = None
-                row["llm_judge_reason"] = _brief_error(exc)
+            atomic_write_jsonl(path, rows, original_mode)
+            processed += 1
+    else:
+        progress = None
+        if show_progress:
+            from tqdm import tqdm
+
+            progress = tqdm(
+                total=len(candidate_indices),
+                desc="LLM Judge",
+                unit="item",
+            )
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = []
+            for index in candidate_indices:
+                row = rows[index]
+                if not has_valid_prediction(row):
+                    row["llm_judge_score"] = 0
+                    row["llm_judge_reason"] = MISSING_ANSWER_REASON
+                    row["llm_judge_model"] = None
+                    atomic_write_jsonl(path, rows, original_mode)
+                    processed += 1
+                    if progress is not None:
+                        progress.update(1)
+                else:
+                    futures.append(
+                        executor.submit(_evaluate_row, index, row, judge)
+                    )
+
+            for future in as_completed(futures):
+                index, score, reason = future.result()
+                row = rows[index]
+                row["llm_judge_score"] = score
+                row["llm_judge_reason"] = reason
                 row["llm_judge_model"] = judge.model_name
-        atomic_write_jsonl(path, rows, original_mode)
-        processed += 1
+                atomic_write_jsonl(path, rows, original_mode)
+                processed += 1
+                if progress is not None:
+                    progress.update(1)
+
+        if progress is not None:
+            progress.close()
 
     summary = summarize_rows(rows)
     update_subtype_metrics(path.with_name("subtype_metrics.json"), rows, summary)
@@ -356,6 +420,12 @@ def parse_args() -> argparse.Namespace:
         default=3,
         help="Maximum Chat Completions attempts per row (default: 3).",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of concurrent judge requests (default: 1).",
+    )
     return parser.parse_args()
 
 
@@ -370,6 +440,7 @@ def main() -> int:
         judge=judge,
         overwrite=args.overwrite,
         limit=args.limit,
+        workers=args.workers,
     )
     print_summary(summary)
     return 0

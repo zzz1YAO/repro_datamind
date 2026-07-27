@@ -37,9 +37,9 @@ python3 DataMind/datamind/eval/python/eval_tablebench_react.py \
   --workers 5
 
 python3 scripts/convert_react_to_tablebench_eval.py \
-  --raw_results_file outputs/qwen7b_datamind_react/raw_react_results.jsonl \
-  --output_dir outputs/qwen7b_datamind_react \
-  --focus_only
+  --raw_results_file /nas-files/ziyi/projects/proj_dsagent/repro_datamind/anomaly_experiments/outputs/qwen3-8b_anomaly_vision/raw_react_results.jsonl \
+  --output_dir /nas-files/ziyi/projects/proj_dsagent/repro_datamind/anomaly_experiments/outputs/qwen3-8b_anomaly_vision 
+
 
 
 python scripts/judge_tablebench_eval.py \
